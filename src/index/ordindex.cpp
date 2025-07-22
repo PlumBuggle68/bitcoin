@@ -77,6 +77,31 @@ std::vector<OrdDBPtr> TxOutToPrune;
 //It ensures data integrity through assertions and uses the BaseIndex::DB interface for 
 //writing transaction positions.
 
+static std::pair<std::vector<SatoshiRange>, std::vector<SatoshiRange>> SkimRanges(std::vector<SatoshiRange>& pool, uint64_t amount) {
+    std::vector<SatoshiRange> result;
+    size_t i = 0; // Start from the front of the pool
+
+    while (amount > 0 && i < pool.size()) {
+        SatoshiRange& r = pool[i];
+        uint64_t available = r.Size();
+
+        if (amount >= available) {
+            result.push_back(r); // Use the whole range
+            amount -= available;
+            ++i; // Move to the next range
+        } else {
+            // Use a portion from the beginning of the range
+            result.push_back({r.start, r.start + amount});
+            r.start += amount; // Shrink the range from the beginning
+            amount = 0;
+        }
+    }
+
+    // Erase fully consumed ranges from the front of the pool
+    pool.erase(pool.begin(), pool.begin() + i);
+
+    return {result, pool};
+}
 
 //used to append a block's transactions to the ordinals index.
 bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
