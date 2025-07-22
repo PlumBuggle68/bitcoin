@@ -27,6 +27,7 @@
 #include <index/blockfilterindex.h>
 #include <index/coinstatsindex.h>
 #include <index/txindex.h>
+#include <index/ordindex.h>
 #include <init/common.h>
 #include <interfaces/chain.h>
 #include <interfaces/init.h>
@@ -516,6 +517,8 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-shutdownnotify=<cmd>", "Execute command immediately before beginning shutdown. The need for shutdown may be urgent, so be careful not to delay it long (if the command doesn't require interaction with the server, consider having it fork into the background).", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #endif
     argsman.AddArg("-txindex", strprintf("Maintain a full transaction index, used by the getrawtransaction rpc call (default: %u)", DEFAULT_TXINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-ordindex", strprintf("Maintain a full ordinal index, used by the getordinalbytxoutput rpc call (default: %u)", DEFAULT_ORDINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-ordindexprune", strprintf("Maintain a lesser ordinal index, used by the getordinalbytxoutput rpc call (default: %u)", DEFAULT_ORDINDEX_PRUNE), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-blockfilterindex=<type>",
                  strprintf("Maintain an index of compact filters by block (default: %s, values: %s).", DEFAULT_BLOCKFILTERINDEX, ListBlockFilterTypes()) +
                  " If <type> is not supplied or if <type> = 1, indexes for all known types are enabled.",
@@ -969,6 +972,11 @@ bool AppInitParameterInteraction(const ArgsManager& args)
             return InitError(_("Prune mode is incompatible with -txindex."));
         if (args.GetBoolArg("-reindex-chainstate", false)) {
             return InitError(_("Prune mode is incompatible with -reindex-chainstate. Use full -reindex instead."));
+        }
+    }
+    if (args.GetIntArg("-prune", 0)) {
+        if (args.GetBoolArg("-ordindex", DEFAULT_ORDINDEX)) {
+            return InitError(_("Prune mode is incompatible with -ordindex."));
         }
     }
 
@@ -1665,8 +1673,9 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     ReadNotificationArgs(args, kernel_notifications);
 
     // cache size calculations
+    // added ordinals index to cache size calculation
     const auto [index_cache_sizes, kernel_cache_sizes] = CalculateCacheSizes(args, g_enabled_filter_types.size());
-
+    
     LogInfo("Cache configuration:");
     LogInfo("* Using %.1f MiB for block index database", kernel_cache_sizes.block_tree_db * (1.0 / 1024 / 1024));
     if (args.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
@@ -1736,6 +1745,16 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     if (args.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
         g_txindex = std::make_unique<TxIndex>(interfaces::MakeChain(node), index_cache_sizes.tx_index, false, do_reindex);
         node.indexes.emplace_back(g_txindex.get());
+    }
+
+    if (args.GetBoolArg("-ordindex", DEFAULT_ORDINDEX)) {
+        // set up ordinals index prune mode
+        g_ordindex_prune = std::make_unique<bool>(DEFAULT_ORDINDEX_PRUNE);
+        // initialize ordinals index
+        g_ordindex = std::make_unique<OrdIndex>(interfaces::MakeChain(node), index_cache_sizes.ord_index, false, do_reindex);
+        g_ordindex->m_last_ordinal = 0;
+        g_ordindex->GetDB().Read(std::make_pair(DB_ORDINDEX, "lastordinal"), g_ordindex->m_last_ordinal);
+        node.indexes.emplace_back(g_ordindex.get());
     }
 
     for (const auto& filter_type : g_enabled_filter_types) {

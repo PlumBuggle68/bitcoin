@@ -234,6 +234,7 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   index/blockfilterindex.cpp
   index/coinstatsindex.cpp
   index/txindex.cpp
+  index/ordindex.cpp
   init.cpp
   kernel/chain.cpp
   kernel/checks.cpp
@@ -291,6 +292,7 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   rpc/mining.cpp
   rpc/net.cpp
   rpc/node.cpp
+  rpc/ordinal.cpp
   rpc/output_script.cpp
   rpc/rawtransaction.cpp
   rpc/server.cpp

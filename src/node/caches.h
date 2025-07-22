@@ -18,9 +18,15 @@ static constexpr size_t MIN_DB_CACHE{4_MiB};
 static constexpr size_t DEFAULT_DB_CACHE{DEFAULT_KERNEL_CACHE};
 
 namespace node {
-struct IndexCacheSizes {
+struct IndexCacheSizes
+{
     size_t tx_index{0};
+    size_t ord_index{0}; 
     size_t filter_index{0};
+};
+struct OrdCacheSizes {
+    size_t ord_index{0};
+    size_t filter_ord{0};
 };
 struct CacheSizes {
     IndexCacheSizes index;
