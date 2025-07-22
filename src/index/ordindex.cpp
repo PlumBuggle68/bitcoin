@@ -161,7 +161,7 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
 
                 if(g_ordindex_prune) {
                     if(block.height-prev_entry.block_height >= 6) {
-                        if(m_db->EraseOrdinalRanges(txin.prevout.hash, txin.prevout.n))
+                        m_db->EraseOrdinalRanges(txin.prevout.hash, txin.prevout.n);
                             //std::cout << "Erased ordinal ranges for " << txin.prevout.hash.ToString() << " vout " << txin.prevout.n << std::endl;
                     } else {
                         OrdDBPtr spentTX = OrdDBPtr(txin.prevout.hash, txin.prevout.n, block.height);
@@ -223,7 +223,7 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
 
     m_last_ordinal = mint_end;  // Persist this to DB later
 
-    //std::cout << "Finished indexing block height: " << block.height << std::endl;
+    std::cout << "Finished indexing block height: " << block.height << std::endl;
 
     return m_db->Write(std::make_pair(DB_ORDINDEX, "lastordinal"), m_last_ordinal);
 
