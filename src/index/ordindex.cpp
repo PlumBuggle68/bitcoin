@@ -126,7 +126,7 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
         return false;
     }
 
-    std::cout << "Indexing block height: " << block.height << std::endl;
+    //std::cout << "Indexing block height: " << block.height << std::endl;
 
     uint64_t block_mint_start = m_last_ordinal;
     std::vector<SatoshiRange> fee_pool;
@@ -162,7 +162,7 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
                 if(g_ordindex_prune) {
                     if(block.height-prev_entry.block_height >= 6) {
                         if(m_db->EraseOrdinalRanges(txin.prevout.hash, txin.prevout.n))
-                            std::cout << "Erased ordinal ranges for " << txin.prevout.hash.ToString() << " vout " << txin.prevout.n << std::endl;
+                            //std::cout << "Erased ordinal ranges for " << txin.prevout.hash.ToString() << " vout " << txin.prevout.n << std::endl;
                     } else {
                         OrdDBPtr spentTX = OrdDBPtr(txin.prevout.hash, txin.prevout.n, block.height);
                         TxOutToPrune.emplace_back(spentTX);
@@ -192,13 +192,13 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
     for (const auto& r : fee_pool) {
         total_fees += r.Size();
     }
-    std::cout << "Total fees assigned to coinbase: " << total_fees << " satoshis" << std::endl;
+    //std::cout << "Total fees assigned to coinbase: " << total_fees << " satoshis" << std::endl;
 
-    std::cout << "Coinbase transaction hash: " << coinbase_tx->GetHash().ToString() << std::endl;
-    
+    //std::cout << "Coinbase transaction hash: " << coinbase_tx->GetHash().ToString() << std::endl;
+
     uint64_t minted_sats = coinbase_tx->GetValueOut() - total_fees;  // subtract total fees from the coinbase output value
                                                                     //  to prevent double counting etc.
-    std::cout << "Minted satoshis in coinbase: " << minted_sats << std::endl;
+    //std::cout << "Minted satoshis in coinbase: " << minted_sats << std::endl;
     std::vector<SatoshiRange> coinbase_output_ranges;
 
 
@@ -223,7 +223,7 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
 
     m_last_ordinal = mint_end;  // Persist this to DB later
 
-    std::cout << "Finished indexing block height: " << block.height << std::endl;
+    //std::cout << "Finished indexing block height: " << block.height << std::endl;
 
     return m_db->Write(std::make_pair(DB_ORDINDEX, "lastordinal"), m_last_ordinal);
 
