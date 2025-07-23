@@ -4,6 +4,7 @@
 
 #include <index/ordindex.h>
 
+#include <algorithm>
 #include <clientversion.h>
 #include <common/args.h>
 #include <index/disktxpos.h>
@@ -14,11 +15,47 @@
 #include <chain.h>
 #include <consensus/params.h>    // for Params().GetConsensus()
 #include <interfaces/chain.h>     // for interfaces::BlockInfo
+#include <script/script.h>        // for CScript and OP_RETURN
 
 
+
+// Helper function to check if a transaction contains ordinal inscriptions
+static bool TransactionContainsOrdinals(const CTransactionRef& tx)
+{
+    // Check each output for OP_RETURN with "ord" tag
+    for (const auto& txout : tx->vout) {
+        const CScript& scriptPubKey = txout.scriptPubKey;
+        
+        // Check if this is an OP_RETURN output
+        if (scriptPubKey.size() > 0 && scriptPubKey[0] == OP_RETURN) {
+            // Look for the "ord" tag in the OP_RETURN data
+            // The typical format is: OP_RETURN <pushdata> "ord" <content>
+            std::vector<unsigned char> vchData;
+            CScript::const_iterator pc = scriptPubKey.begin() + 1; // Skip OP_RETURN
+            
+            // Try to extract data from the OP_RETURN
+            while (pc < scriptPubKey.end()) {
+                opcodetype opcode;
+                if (!scriptPubKey.GetOp(pc, opcode, vchData)) {
+                    break;
+                }
+                
+                // Check if this data chunk contains "ord"
+                if (vchData.size() >= 3) {
+                    std::string dataStr(vchData.begin(), vchData.end());
+                    if (dataStr.find("ord") != std::string::npos) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
 
 std::unique_ptr<OrdIndex> g_ordindex;
 std::unique_ptr<bool> g_ordindex_prune;
+std::unique_ptr<bool> g_ordindex_rewrite_spent;
 
 /** Access to the ordindex database (indexes/ordindex/) */
 class OrdIndex::DB : public BaseIndex::DB
@@ -138,6 +175,14 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
     for (size_t tx_index = 1; tx_index < block.data->vtx.size(); ++tx_index) {
         const auto& tx = block.data->vtx[tx_index];
 
+        // Optional: Check if transaction contains ordinals before processing
+        // This is an optimization - you can enable/disable based on your needs
+        bool tx_has_ordinals = TransactionContainsOrdinals(tx);
+        
+        if (tx_has_ordinals) {
+            std::cout << "Found ordinal inscription in tx: " << tx->GetHash().ToString() << std::endl;
+        }
+        
         // Step 2a: Pool all inputs
         std::vector<SatoshiRange> pool;
 
@@ -167,6 +212,11 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
                         OrdDBPtr spentTX = OrdDBPtr(txin.prevout.hash, txin.prevout.n, block.height);
                         TxOutToPrune.emplace_back(spentTX);
                     }
+                }else if(g_ordindex_rewrite_spent){
+                    TxOutputSatoshiEntry entry{prev_entry.ranges, prev_entry.block_height};
+                    entry.spent = true; // mark the entry as spent
+                    m_db->EraseOrdinalRanges(txin.prevout.hash, txin.prevout.n);
+                    m_db->WriteOrdinalRanges(txin.prevout.hash, txin.prevout.n, entry);
                 }
             }
         }
@@ -177,6 +227,7 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
             std::pair<std::vector<SatoshiRange>, std::vector<SatoshiRange>> assigned = SkimRanges(pool, sats);
             pool = assigned.second; // update the pool with the remaining ranges after assignment
             TxOutputSatoshiEntry entry{assigned.first, static_cast<int>(block.height)};
+            entry.spent = false; // mark the entry as unspent
             m_db->WriteOrdinalRanges(tx->GetHash(), vout_index, entry);        // then write the data.
         }
 
@@ -218,6 +269,7 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
         std::pair<std::vector<SatoshiRange>, std::vector<SatoshiRange>> assigned = SkimRanges(coinbase_output_ranges, sats);
         coinbase_output_ranges = assigned.second; // update the pool with the remaining ranges after assignment
         TxOutputSatoshiEntry entry{assigned.first, static_cast<int>(block.height)};
+        entry.spent = false; // mark the entry as unspent
         m_db->WriteOrdinalRanges(coinbase_tx->GetHash(), vout_index, entry);        // then write the data.
     }
 
@@ -242,4 +294,75 @@ bool OrdIndex::FindOrdByTxOutput(const uint256& tx_hash, uint32_t& vout, std::ve
     }
     ranges = std::move(entry.ranges);
     return true;
+}
+
+bool OrdIndex::FindTxOutputsByOrdinal(uint64_t ordinal, std::vector<std::pair<uint256, uint32_t>>& outputs) const
+{
+    std::unique_ptr<CDBIterator> pcursor(m_db->NewIterator());
+
+    // Start from the first entry and iterate through all
+    pcursor->SeekToFirst();
+
+    while (pcursor->Valid()) {
+        std::pair<uint8_t, std::pair<uint256, uint32_t>> key;
+        TxOutputSatoshiEntry entry;
+        
+        // Try to get the key and value
+        if (pcursor->GetKey(key) && key.first == DB_ORDINDEX) {
+            if (pcursor->GetValue(entry)) {
+                // Check if the ordinal falls within any range in this entry
+                for (const auto& range : entry.ranges) {
+                    if (ordinal >= range.start && ordinal < range.end-1) { // -1 to match with ord 
+                        // Found a valid range containing the ordinal
+                        outputs.emplace_back(key.second.first, key.second.second);
+                        break; // Found in this entry, move to next entry
+                    }
+                }
+            }else{
+                std::cout << "Failed to get value for key: " << key.second.first.ToString() << " vout: " << key.second.second << std::endl;
+            }
+            // If GetValue failed, this might be the "lastordinal" entry, just continue
+        }else{
+            std::cout << "Failed to get key for entry, possibly not a valid ordinal index entry." << std::endl;
+        }
+        
+        pcursor->Next();
+    }
+    
+    return !outputs.empty(); // Return true if at least one output was found
+}
+
+bool OrdIndex::FindOrdPosition(uint64_t ordinal, std::pair<uint256, uint32_t>& outputs) const
+{
+    std::unique_ptr<CDBIterator> pcursor(m_db->NewIterator());
+
+    // Start from the first entry and iterate through all
+    pcursor->SeekToFirst();
+
+    while (pcursor->Valid()) {
+        std::pair<uint8_t, std::pair<uint256, uint32_t>> key;
+        TxOutputSatoshiEntry entry;
+        
+        // Try to get the key and value
+        if (pcursor->GetKey(key) && key.first == DB_ORDINDEX) {
+            if (pcursor->GetValue(entry)) {
+                // Check if the ordinal falls within any range in this entry
+                for (const auto& range : entry.ranges) {
+                    if (ordinal >= range.start && ordinal < range.end-1) { // -1 to match with ord 
+                        // Found a valid range containing the ordinal
+                        if(!entry.spent){
+                            outputs = std::make_pair(key.second.first, key.second.second);
+                            return true; // Found the ordinal position
+                        }
+                        break; // Found in this entry, move to next entry
+                    }
+                }
+            }
+            // If GetValue failed, this might be the "lastordinal" entry, just continue
+        }
+        
+        pcursor->Next();
+    }
+    
+    return false; // No outputs found containing the ordinal
 }

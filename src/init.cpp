@@ -518,7 +518,8 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
 #endif
     argsman.AddArg("-txindex", strprintf("Maintain a full transaction index, used by the getrawtransaction rpc call (default: %u)", DEFAULT_TXINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-ordindex", strprintf("Maintain a full ordinal index, used by the getordinalbytxoutput rpc call (default: %u)", DEFAULT_ORDINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    argsman.AddArg("-ordindexprune", strprintf("Maintain a lesser ordinal index, used by the getordinalbytxoutput rpc call (default: %u)", DEFAULT_ORDINDEX_PRUNE), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-ordindexprune", strprintf("Maintain a lesser ordinal index, when enabled, spent outputs will be automatically deleted from the DB. This means that only an ordinals current position will be stored in the DB. (default: %u)", DEFAULT_ORDINDEX_PRUNE), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-ordindexrewritespent", strprintf("When enabled, spent outputs will be rewritten in the DB to reflect their current status. (default: %u)", DEFAULT_ORDINDEX_REWRITE_SPENT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-blockfilterindex=<type>",
                  strprintf("Maintain an index of compact filters by block (default: %s, values: %s).", DEFAULT_BLOCKFILTERINDEX, ListBlockFilterTypes()) +
                  " If <type> is not supplied or if <type> = 1, indexes for all known types are enabled.",
@@ -977,6 +978,11 @@ bool AppInitParameterInteraction(const ArgsManager& args)
     if (args.GetIntArg("-prune", 0)) {
         if (args.GetBoolArg("-ordindex", DEFAULT_ORDINDEX)) {
             return InitError(_("Prune mode is incompatible with -ordindex."));
+        }
+    }
+    if (args.GetIntArg("-ordindexprune", 0)) {
+        if (!args.GetBoolArg("-ordindex", DEFAULT_ORDINDEX)) {
+            return InitError(_("Ordinal index pruning is only available when ordinals are enabled with -ordindex."));
         }
     }
 
@@ -1750,6 +1756,8 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     if (args.GetBoolArg("-ordindex", DEFAULT_ORDINDEX)) {
         // set up ordinals index prune mode
         g_ordindex_prune = std::make_unique<bool>(DEFAULT_ORDINDEX_PRUNE);
+        // set up ordinals index rewrite spent mode
+        g_ordindex_rewrite_spent = std::make_unique<bool>(DEFAULT_ORDINDEX_REWRITE_SPENT);
         // initialize ordinals index
         g_ordindex = std::make_unique<OrdIndex>(interfaces::MakeChain(node), index_cache_sizes.ord_index, false, do_reindex);
         g_ordindex->m_last_ordinal = 0;

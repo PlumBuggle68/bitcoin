@@ -120,6 +120,8 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "getrawtransaction", 1, "verbose" },
     { "getordinalbytxoutput", 0, "txid" },
     { "getordinalbytxoutput", 1, "vout" },
+    { "gettxoutputsbyordinal", 0, "ordinal" },
+    { "getordinalposition", 0, "ordinal" },
     { "createrawtransaction", 0, "inputs" },
     { "createrawtransaction", 1, "outputs" },
     { "createrawtransaction", 2, "locktime" },

@@ -9,6 +9,7 @@
 
 static constexpr bool DEFAULT_ORDINDEX{false};
 static constexpr bool DEFAULT_ORDINDEX_PRUNE{false};
+static constexpr bool DEFAULT_ORDINDEX_REWRITE_SPENT{false};
 static constexpr uint8_t DB_ORDINDEX = 'o';
 
 
@@ -26,6 +27,7 @@ struct SatoshiRange {
 struct TxOutputSatoshiEntry {
     std::vector<SatoshiRange> ranges;
     int block_height;
+    bool spent = false;
 
     template <typename Stream>
     void Serialize(Stream& s) const {
@@ -38,21 +40,6 @@ struct TxOutputSatoshiEntry {
         ::Unserialize(s, block_height);
     }
 };
-
-/*struct Inscription {
-    uint64_t IntegerNotation;
-    std::string Name() {
-        if (IntegerNotation == 0) return "a";
-        std::string result;
-        uint64_t n = IntegerNotation;
-        while (n > 0) {
-            char c = 'a' + (n % 26);
-            result = c + result;
-            n /= 26;
-        }
-        return result;
-    }
-};*/
 
 // Serialization functions for LevelDB
 template <typename Stream>
@@ -129,6 +116,9 @@ public:
     /// @return  true if successful, false otherwise
     bool FindOrdByTxOutput(const uint256& tx_hash, uint32_t& vout, std::vector<SatoshiRange>& ranges) const;
     
+    bool FindTxOutputsByOrdinal(uint64_t ordinal, std::vector<std::pair<uint256, uint32_t>>& outputs) const;
+
+    bool FindOrdPosition(uint64_t ordinal, std::pair<uint256, uint32_t>& outputs) const;
 
     using OrdinalRange = std::pair<uint64_t, uint64_t>;
 
@@ -140,4 +130,5 @@ public:
 /// The global ordinal index, used in GetTransaction. May be null.
 extern std::unique_ptr<OrdIndex> g_ordindex;
 extern std::unique_ptr<bool> g_ordindex_prune;
+extern std::unique_ptr<bool> g_ordindex_rewrite_spent;
 #endif // BITCOIN_INDEX_ORDINDEX_H
