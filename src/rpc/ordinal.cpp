@@ -1,13 +1,30 @@
-#include "rpc/client.h"
-#include "rpc/server.h"
-#include "rpc/util.h"
-#include "index/ordindex.h"
-#include "univalue.h"
-#include "util/strencodings.h"
-#include "util/translation.h"
+// Copyright (c) 2017-2022 The Bitcoin Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+/** 
+ * RPC commands for Bitcoin ordinal theory functionality.
+ * 
+ * This file implements JSON-RPC commands for querying ordinal information:
+ * - getordinalrangesbytxoutput: Get ordinal ranges for a specific transaction output
+ * - gettxoutputsbyordinal: Find all outputs containing a specific ordinal
+ * - getordinalposition: Get the current position of a specific ordinal
+ * 
+ * These commands provide access to the ordinal index data for applications
+ * implementing ordinal theory protocols and inscription tracking.
+ */
+
+#include <rpc/client.h>
+#include <rpc/server.h>
+#include <rpc/util.h>
+#include <index/ordindex.h>
+#include <univalue.h>
+#include <util/strencodings.h>
+#include <util/translation.h>
 
 #include <iostream>
 
+/** Helper function to safely convert UniValue to uint32_t */
 int Uint32FromUniValue(const UniValue& value)
 {
     if (value.isNum()) {
@@ -23,6 +40,7 @@ int Uint32FromUniValue(const UniValue& value)
     throw JSONRPCError(RPC_TYPE_ERROR, "Invalid parameter type");
 }
 
+/** Helper function to convert uint32_t to UniValue string representation */
 UniValue UnivalueFromUint32(uint32_t value)
 {
     UniValue result(UniValue::VSTR);
@@ -31,6 +49,7 @@ UniValue UnivalueFromUint32(uint32_t value)
     return result;
 }
 
+/** Helper function to safely convert UniValue to uint64_t for ordinal numbers */
 uint64_t Uint64FromUniValue(const UniValue& value)
 {
     if (value.isNum()) {
@@ -48,6 +67,7 @@ uint64_t Uint64FromUniValue(const UniValue& value)
     throw JSONRPCError(RPC_TYPE_ERROR, "Invalid parameter type");
 }
 
+/** Helper function to convert uint64_t to UniValue string representation for large ordinal numbers */
 UniValue UnivalueFromUint64(uint64_t value)
 {
     UniValue result(UniValue::VSTR);
@@ -56,26 +76,40 @@ UniValue UnivalueFromUint64(uint64_t value)
     return result;
 }
 
-static RPCHelpMan getordinalbytxoutput()
+/**
+ * RPC command: getordinalrangesbytxoutput
+ * 
+ * Returns all ordinal ranges contained in a specific transaction output,
+ * along with metadata about the output (spent status, inscription presence, block height).
+ * 
+ * This is useful for applications that need to know exactly which ordinals
+ * are contained in a particular UTXO or historical transaction output.
+ */
+static RPCHelpMan getordinalrangesbytxoutput()
 {
-    return RPCHelpMan{"getordinalbytxoutput",
+    return RPCHelpMan{"getordinalrangesbytxoutput",
                 "\nReturns the ordinal ranges for a specific transaction output.\n",
                 {
                     {"txid", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The transaction ID."},
                     {"vout", RPCArg::Type::NUM, RPCArg::Optional::NO, "The output index."},
                 },
                 RPCResult{
-                    RPCResult::Type::ARR, "", "An array of ordinal ranges for the specified output.",
+                    RPCResult::Type::OBJ, "", "An object containing ordinal ranges and metadata for the specified output.",
                     {
-                        {RPCResult::Type::OBJ, "", "", {
-                            {RPCResult::Type::NUM, "start", "The starting ordinal of the range."},
-                            {RPCResult::Type::NUM, "end", "The ending ordinal of the range."},
+                        {RPCResult::Type::ARR, "ranges", "Array of ordinal ranges for this output.", {
+                            {RPCResult::Type::OBJ, "", "", {
+                                {RPCResult::Type::NUM, "start", "The starting ordinal of the range."},
+                                {RPCResult::Type::NUM, "end", "The ending ordinal of the range."},
+                            }},
                         }},
+                        {RPCResult::Type::BOOL, "spent", "Whether this output has been spent."},
+                        {RPCResult::Type::BOOL, "inscription", "Whether this output contains an inscription."},
+                        {RPCResult::Type::NUM, "block_height", "The block height where this output was created."},
                     }
                 },
                 RPCExamples{
-                    HelpExampleCli("getordinalbytxoutput", "\"txid\" 0")
-                  + HelpExampleRpc("getordinalbytxoutput", "\"txid\", 0")
+                    HelpExampleCli("getordinalrangesbytxoutput", "\"txid\" 0")
+                  + HelpExampleRpc("getordinalrangesbytxoutput", "\"txid\", 0")
                 },
                 [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
 {
@@ -86,26 +120,52 @@ static RPCHelpMan getordinalbytxoutput()
     uint256 txid = ParseHashV(request.params[0], "txid");
     uint32_t vout = Uint32FromUniValue(request.params[1]);
 
-
-    std::vector<SatoshiRange> ranges;
-    if (!g_ordindex->FindOrdByTxOutput(txid, vout, ranges)) {
+    TxOutputSatoshiEntry entry;
+    if (!g_ordindex->FindOrdRangesByTxOutput(txid, vout, entry)) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No ordinals found for this transaction output.");
     }
 
-    UniValue result(UniValue::VARR);
+    std::vector<SatoshiRange> ranges = entry.ranges;
+
+    UniValue result(UniValue::VOBJ);
+    
+    UniValue height_val;
+    height_val.setInt((uint64_t)entry.block_height);
+    result.pushKV("block_height", height_val);
+    
+    UniValue spent_val;
+    spent_val.setBool(entry.spent);
+    result.pushKV("spent", spent_val);
+    
+    UniValue inscription_val;
+    inscription_val.setBool(entry.inscription);
+    result.pushKV("inscription", inscription_val);
+    
+    UniValue rangesArray(UniValue::VARR);
     for (const auto& range : ranges) {
         UniValue obj(UniValue::VOBJ);
         auto start = std::to_string(range.start);
         auto end = std::to_string(range.end-1);
-        obj.pushKV("start", start);
-        obj.pushKV("end", end); // end is exclusive to match with standard ord theory 
-        result.push_back(obj);
+        obj.pushKV("start", UnivalueFromUint64(range.start));
+        obj.pushKV("end", UnivalueFromUint64(range.end)); // end is exclusive to match with standard ord theory 
+        rangesArray.push_back(obj);
     }
+    result.pushKV("ranges", rangesArray);
     return result;
 },
     };
 }
 
+/**
+ * RPC command: gettxoutputsbyordinal
+ * 
+ * Finds all transaction outputs that contain a specific ordinal number.
+ * This command is useful for tracking the history of a particular ordinal
+ * as it moves through different transactions.
+ * 
+ * Note: If pruning is enabled (-ordinalindexprune), only unspent outputs
+ * will be returned as old spent outputs are removed from the database.
+ */
 static RPCHelpMan gettxoutputsbyordinal()
 {
     return RPCHelpMan{"gettxoutputsbyordinal",
@@ -144,7 +204,9 @@ static RPCHelpMan gettxoutputsbyordinal()
         UniValue obj(UniValue::VOBJ);
         auto txid_str = txid.ToString();
         auto vout_str = UnivalueFromUint32(vout);
-        obj.pushKV("txid", txid_str);
+        UniValue txid_val;
+        txid_val.setStr(txid_str);
+        obj.pushKV("txid", txid_val);
         obj.pushKV("vout", vout_str);
         result.push_back(obj);
     }
@@ -153,6 +215,16 @@ static RPCHelpMan gettxoutputsbyordinal()
     };
 }
 
+/**
+ * RPC command: getordinalposition
+ * 
+ * Returns the current position (most recent unspent output) of a specific ordinal.
+ * This command requires the -ordindexrewritespent option to be enabled, as it
+ * needs to track which outputs have been spent to determine the current position.
+ * 
+ * This is useful for applications that need to find where a specific ordinal
+ * currently resides in the UTXO set, such as wallet applications or block explorers.
+ */
 static RPCHelpMan getordinalposition()
 {
     return RPCHelpMan{"getordinalposition",
@@ -195,19 +267,23 @@ static RPCHelpMan getordinalposition()
     UniValue result(UniValue::VOBJ);
     auto txid_str = outputs.first.ToString();
     auto vout_str = UnivalueFromUint32(outputs.second);
-    result.pushKV("txid", txid_str);
+    UniValue txid_val;
+    txid_val.setStr(txid_str);
+    result.pushKV("txid", txid_val);
     result.pushKV("vout", vout_str);
     return result;
 },
     };
 }
 
-
-
+/**
+ * Register all ordinal-related RPC commands with the RPC server.
+ * @param t Reference to the RPC command table
+ */
 void RegisterOrdinalRPCCommands(CRPCTable& t)
 {
     static const CRPCCommand commands[]{
-        {"ordinal", &getordinalbytxoutput},
+        {"ordinal", &getordinalrangesbytxoutput},
         {"ordinal", &gettxoutputsbyordinal},
         {"ordinal", &getordinalposition},
     };
