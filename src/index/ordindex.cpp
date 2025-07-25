@@ -20,8 +20,8 @@
 /**
  * Check if a transaction contains ordinal inscription data.
  *
- * @param tx The transaction to examine
- * @param output_index The specific output index (currently unused - inscriptions are per-transaction)
+ * @param[in] tx The transaction to examine
+ * @param[in] output_index The specific output index (currently unused - inscriptions are per-transaction)
  * @return true if inscription patterns are detected, false otherwise
  * 
  */
@@ -43,12 +43,12 @@ static bool OutputContainsInscription(const CTransactionRef& tx, size_t output_i
             // Check if we have enough bytes for the length and data
             uint8_t data_length = witness_item[2];
             if (data_length >= 3 && witness_item.size() >= 3 + data_length) {
-                // Extract the data after the length byte - check for "ord"
+                // Extract the data after the length byte - check for "ord" prefix
                 std::string third_element(witness_item.begin() + 3, 
                                         witness_item.begin() + 3 + data_length);
-                
-                // Check if it contains "ord"
-                if (third_element.find("ord") != std::string::npos) {
+
+                // Check if it starts with "ord"
+                if (third_element.size() >= 3 && third_element.compare(0, 3, "ord") == 0) {
                     return true;
                 }
             }
@@ -95,9 +95,18 @@ bool OrdIndex::DB::ReadOrdinalRanges(const uint256& txid, uint32_t vout, TxOutpu
 /** Write ordinal data to database using batch operation for efficiency */
 bool OrdIndex::DB::WriteOrdinalRanges(const uint256& txid, uint32_t vout, const TxOutputSatoshiEntry& entry)
 {
+    // Check if key exists without reading the value (more efficient)
+    auto key = std::make_pair(DB_ORDINDEX, std::make_pair(txid, vout));
+    
     CDBBatch batch(*this);
-    batch.Write(std::make_pair(DB_ORDINDEX, std::make_pair(txid, vout)), entry);
-    return WriteBatch(batch);
+    batch.Write(key, entry);
+    bool success = WriteBatch(batch);
+    
+    if (!success) {
+        LogPrintf("Failed to write ranges for %s:%d\n", txid.ToString(), vout);
+    }
+    
+    return success;
 }
 
 /** Remove ordinal data from database using batch operation */
@@ -126,9 +135,9 @@ std::vector<OrdDBPtr> TxOutToPrune;
  * This implements the core ordinal theory algorithm where satoshis are assigned to outputs
  * in the same order they were received as inputs. The function consumes ranges from the
  * front of the pool and returns the allocated ranges plus the remaining pool.
- * 
- * @param pool Vector of available satoshi ranges (modified by this function)
- * @param amount Number of satoshis to allocate from the pool
+ *
+ * @param[in,out] pool Vector of available satoshi ranges (modified by this function)
+ * @param[in] amount Number of satoshis to allocate from the pool
  * @return Pair containing (allocated_ranges, remaining_pool)
  */
 static std::pair<std::vector<SatoshiRange>, std::vector<SatoshiRange>> SkimRanges(std::vector<SatoshiRange>& pool, uint64_t amount) {
@@ -173,25 +182,27 @@ static std::pair<std::vector<SatoshiRange>, std::vector<SatoshiRange>> SkimRange
  * - Fees are collected and assigned to the coinbase transaction
  * - New satoshis are minted with sequential ordinal numbers
  * - Each output's ordinal ranges are stored in the database
- * 
- * @param block Block information including transactions and height
+ *
+ * @param[in] block Block information including transactions and height
  * @return true if the block was successfully processed, false on error
  */
 bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
 {
     // Phase 1: Prune old spent outputs if pruning is enabled
     // This reduces database size by removing ordinal data for old spent outputs
-    for (auto it = TxOutToPrune.begin(); it != TxOutToPrune.end(); ) {
-        TxOutputSatoshiEntry entry;
-        if (m_db->ReadOrdinalRanges(it->hash, it->vout, entry)) {
-            if (block.height - entry.block_height >= 6) {
-                m_db->EraseOrdinalRanges(it->hash, it->vout);
-                it = TxOutToPrune.erase(it);
-                continue;
+    if(g_ordindex_prune) 
+        // Iterate through scheduled outputs to prune
+        for (auto it = TxOutToPrune.begin(); it != TxOutToPrune.end(); ) {
+            TxOutputSatoshiEntry entry;
+            if (m_db->ReadOrdinalRanges(it->hash, it->vout, entry)) {
+                if (block.height - entry.block_height >= 6) {
+                    m_db->EraseOrdinalRanges(it->hash, it->vout);
+                    it = TxOutToPrune.erase(it);
+                    continue;
+                }
             }
+            ++it;
         }
-        ++it;
-    }
 
     // Phase 2: Validate block data and initialize tracking variables
     if (block.data == nullptr) {
@@ -231,19 +242,23 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
                 if(g_ordindex_prune) {
                     // If pruning is enabled, remove old spent outputs to save space
                     if(block.height-prev_entry.block_height >= 6) {
-                        m_db->EraseOrdinalRanges(txin.prevout.hash, txin.prevout.n);
+                        //m_db->EraseOrdinalRanges(txin.prevout.hash, txin.prevout.n);
                     } else {
                         // Schedule for later pruning
                         OrdDBPtr spentTX = OrdDBPtr(txin.prevout.hash, txin.prevout.n, block.height);
                         TxOutToPrune.emplace_back(spentTX);
                     }
-                } else if(g_ordindex_rewrite_spent) {
+                }
+                if(g_ordindex_rewrite_spent) {
                     // If spent tracking is enabled, mark the output as spent
                     TxOutputSatoshiEntry entry{prev_entry.ranges, prev_entry.block_height};
                     entry.spent = true;
-                    m_db->EraseOrdinalRanges(txin.prevout.hash, txin.prevout.n);
+                    entry.inscription = prev_entry.inscription; // Preserve inscription status
                     m_db->WriteOrdinalRanges(txin.prevout.hash, txin.prevout.n, entry);
                 }
+            } else {
+                LogError("Failed to read ordinal ranges for input %s:%d in tx %s\n",
+                         txin.prevout.hash.ToString(), txin.prevout.n, tx->GetHash().ToString());
             }
         }
 
@@ -257,15 +272,15 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
             pool = assigned.second; // Update pool with remaining ranges
             
             // Check if this output contains inscription data
-            bool output_has_ordinals = OutputContainsInscription(tx, vout_index);
-            if (output_has_ordinals) {
+            bool output_has_inscription = OutputContainsInscription(tx, vout_index);
+            if (output_has_inscription) {
                 LogInfo("Found ordinal inscription in tx: %s output: %d\n", tx->GetHash().ToString(), vout_index);
             }
             
             // Create and store the ordinal entry for this output
             TxOutputSatoshiEntry entry{assigned.first, static_cast<int>(block.height)};
             entry.spent = false;
-            entry.inscription = output_has_ordinals;
+            entry.inscription = output_has_inscription;
             m_db->WriteOrdinalRanges(tx->GetHash(), vout_index, entry);
         }
 
@@ -341,17 +356,25 @@ BaseIndex::DB& OrdIndex::GetDB() const { return *m_db; }
  * Find ordinal ranges for a specific transaction output.
  * This is the primary lookup method used by RPC commands.
  * 
- * @param tx_hash Hash of the transaction to look up
- * @param vout Output index within the transaction
- * @param entry Reference to store the retrieved ordinal data
+ * @param[in] tx_hash Hash of the transaction to look up
+ * @param[in] vout Output index within the transaction
+ * @param[out] entry Reference to store the retrieved ordinal data
  * @return true if the output exists and contains ordinals, false otherwise
  */
 bool OrdIndex::FindOrdRangesByTxOutput(const uint256& tx_hash, uint32_t& vout, TxOutputSatoshiEntry& entry) const
 {
-    m_db->ReadOrdinalRanges(tx_hash, vout, entry);
+    bool found = m_db->ReadOrdinalRanges(tx_hash, vout, entry);
+    if (!found) {
+        LogPrintf("No database entry found for %s:%d\n", tx_hash.ToString(), vout);
+        return false;
+    }
+    
     if (entry.ranges.empty()) {
+        LogPrintf("Empty ranges found for %s:%d\n", tx_hash.ToString(), vout);
         return false; // No ordinal ranges found for this output
     }
+    
+    LogPrintf("Found %d ranges for %s:%d\n", entry.ranges.size(), tx_hash.ToString(), vout);
     return true;
 }
 
@@ -361,8 +384,8 @@ bool OrdIndex::FindOrdRangesByTxOutput(const uint256& tx_hash, uint32_t& vout, T
  * This function scans the entire ordinal database to find outputs containing
  * the specified ordinal. It's used by the gettxoutputsbyordinal RPC command.
  * 
- * @param ordinal The ordinal number to search for
- * @param outputs Vector to store the results as (txid, vout) pairs
+ * @param[in] ordinal The ordinal number to search for
+ * @param[out] outputs Vector to store the results as (txid, vout) pairs
  * @return true if at least one output was found, false otherwise
  */
 bool OrdIndex::FindTxOutputsByOrdinal(uint64_t ordinal, std::vector<std::pair<uint256, uint32_t>>& outputs) const
@@ -407,8 +430,8 @@ bool OrdIndex::FindTxOutputsByOrdinal(uint64_t ordinal, std::vector<std::pair<ui
  * to distinguish between spent and unspent outputs to determine the current position.
  * It returns the most recent unspent output containing the ordinal.
  * 
- * @param ordinal The ordinal number to search for
- * @param outputs Reference to store the result as (txid, vout) pair
+ * @param[in] ordinal The ordinal number to search for
+ * @param[out] outputs Reference to store the result as (txid, vout) pair
  * @return true if the ordinal's current position was found, false otherwise
  */
 bool OrdIndex::FindOrdPosition(uint64_t ordinal, std::pair<uint256, uint32_t>& outputs) const

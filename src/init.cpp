@@ -1755,14 +1755,17 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
 
     if (args.GetBoolArg("-ordindex", DEFAULT_ORDINDEX)) {
         // set up ordinals index prune mode
-        g_ordindex_prune = std::make_unique<bool>(DEFAULT_ORDINDEX_PRUNE);
+        g_ordindex_prune = std::make_unique<bool>(args.GetBoolArg("-ordindexprune", DEFAULT_ORDINDEX_PRUNE));
         // set up ordinals index rewrite spent mode
-        g_ordindex_rewrite_spent = std::make_unique<bool>(DEFAULT_ORDINDEX_REWRITE_SPENT);
+        g_ordindex_rewrite_spent = std::make_unique<bool>(args.GetBoolArg("-ordindexrewritespent", DEFAULT_ORDINDEX_REWRITE_SPENT));
         // initialize ordinals index
         g_ordindex = std::make_unique<OrdIndex>(interfaces::MakeChain(node), index_cache_sizes.ord_index, false, do_reindex);
         g_ordindex->m_last_ordinal = 0;
         g_ordindex->GetDB().Read(std::make_pair(DB_ORDINDEX, "lastordinal"), g_ordindex->m_last_ordinal);
         node.indexes.emplace_back(g_ordindex.get());
+        LogPrintf("Ordinals index initialized with last ordinal %u\n", g_ordindex->m_last_ordinal);
+        LogPrintf("Ordinals index prune mode is %s\n", *g_ordindex_prune ? "enabled" : "disabled");
+        LogPrintf("Ordinals index rewrite spent mode is %s\n", *g_ordindex_rewrite_spent ? "enabled" : "disabled");
     }
 
     for (const auto& filter_type : g_enabled_filter_types) {
