@@ -121,9 +121,7 @@ static RPCHelpMan getordinalrangesbytxoutput()
     uint32_t vout = Uint32FromUniValue(request.params[1]);
 
     TxOutputSatoshiEntry entry;
-    if (!g_ordindex->FindOrdRangesByTxOutput(txid, vout, entry)) {
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No ordinals found for this transaction output. Possible OP_RETURN.");
-    }
+    g_ordindex->FindOrdRangesByTxOutput(txid, vout, entry);
 
     std::vector<SatoshiRange> ranges = entry.ranges;
 

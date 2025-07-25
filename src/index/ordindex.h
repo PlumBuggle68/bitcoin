@@ -171,7 +171,9 @@ public:
 
     /** The highest ordinal number that has been assigned (tracks total supply) */
     uint64_t m_last_ordinal = 0;
-    
+
+// Forward declarations for helper functions defined in ordindex.cpp
+     
 };
 
 /** Global ordinal index instance, available when -ordindex is enabled */

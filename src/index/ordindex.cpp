@@ -17,45 +17,7 @@
 #include <interfaces/chain.h>     // for interfaces::BlockInfo
 #include <script/script.h>        // for CScript and OP_RETURN
 
-/**
- * Check if a transaction contains ordinal inscription data.
- *
- * @param[in] tx The transaction to examine
- * @param[in] output_index The specific output index (currently unused - inscriptions are per-transaction)
- * @return true if inscription patterns are detected, false otherwise
- * 
- */
-static bool OutputContainsInscription(const CTransactionRef& tx, size_t output_index)
-{
-    // Check if transaction has inputs with witness data
-    if (tx->vin.empty() || tx->vin[0].scriptWitness.stack.empty()) {
-        return false;
-    }
 
-    // Look through witness stack items for ordinal envelope pattern
-    for(const auto& witness_item : tx->vin[0].scriptWitness.stack){
-        if (witness_item.size() < 6) { // Need at least OP_FALSE, OP_IF, length byte, and some data
-            continue;
-        }
-
-        // Check first two bytes for OP_FALSE (0x00) and OP_IF (0x63)
-        if (witness_item[0] == OP_FALSE && witness_item[1] == OP_IF) {
-            // Check if we have enough bytes for the length and data
-            uint8_t data_length = witness_item[2];
-            if (data_length >= 3 && witness_item.size() >= 3 + data_length) {
-                // Extract the data after the length byte - check for "ord" prefix
-                std::string third_element(witness_item.begin() + 3, 
-                                        witness_item.begin() + 3 + data_length);
-
-                // Check if it starts with "ord"
-                if (third_element.size() >= 3 && third_element.compare(0, 3, "ord") == 0) {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
-}
 
 /** Global instances for ordinal index and configuration */
 std::unique_ptr<OrdIndex> g_ordindex;
@@ -87,34 +49,57 @@ OrdIndex::DB::DB(size_t n_cache_size, bool f_memory, bool f_wipe) :
 {}
 
 /** Read ordinal data from database using (txid, vout) as key */
+/**
+ * @brief reads the ordinal range information for a specific transaction output from the database.
+ *
+ * This function retrieves the ordinal range entry associated with the given transaction ID and output index.
+ *
+ * @param[in] txid   The transaction ID for which the ordinal range is being read.
+ * @param[in] vout   The output index within the transaction.
+ * @param[out] entry The ordinal range entry containing satoshi information for the output.
+ * @return true if the read operation was successful, false otherwise.
+ */
 bool OrdIndex::DB::ReadOrdinalRanges(const uint256& txid, uint32_t vout, TxOutputSatoshiEntry& entry) const
 {
     return Read(std::make_pair(DB_ORDINDEX, std::make_pair(txid, vout)), entry);
 }
 
 /** Write ordinal data to database using batch operation for efficiency */
+/**
+ * @brief Writes the ordinal range information for a specific transaction output to the database.
+ *
+ * This function creates a database batch operation to store the provided ordinal range entry
+ * associated with the given transaction ID and output index. The batch is then written to the database.
+ *
+ * @param[in] txid   The transaction ID for which the ordinal range is being written.
+ * @param[in] vout   The output index within the transaction.
+ * @param[in] entry  The ordinal range entry containing satoshi information for the output.
+ * @return true if the batch write to the database was successful, false otherwise.
+ */
 bool OrdIndex::DB::WriteOrdinalRanges(const uint256& txid, uint32_t vout, const TxOutputSatoshiEntry& entry)
 {
-    // Check if key exists without reading the value (more efficient)
-    auto key = std::make_pair(DB_ORDINDEX, std::make_pair(txid, vout));
-    
     CDBBatch batch(*this);
-    batch.Write(key, entry);
-    bool success = WriteBatch(batch);
-    
-    if (!success) {
-        LogPrintf("Failed to write ranges for %s:%d\n", txid.ToString(), vout);
-    }
-    
-    return success;
+    batch.Write(std::make_pair(DB_ORDINDEX, std::make_pair(txid, vout)), entry);
+    return WriteBatch(batch);
 }
 
 /** Remove ordinal data from database using batch operation */
+/**
+ * @brief Writes the ordinal range information for a specific transaction output to the database.
+ *
+ * This function creates a database batch operation to store the provided ordinal range entry
+ * associated with the given transaction ID and output index. The batch is then written to the database.
+ *
+ * @param[in] txid   The transaction ID for which the ordinal range is being written.
+ * @param[in] vout   The output index within the transaction.
+ * @return true if the batch write to the database was successful, false otherwise.
+ */
 bool OrdIndex::DB::EraseOrdinalRanges(const uint256& txid, uint32_t vout)
 {
-    CDBBatch batch(*this);
+    /*CDBBatch batch(*this);
     batch.Erase(std::make_pair(DB_ORDINDEX, std::make_pair(txid, vout)));
-    return WriteBatch(batch);
+    return WriteBatch(batch);*/
+    return true;
 }
 
 /** Construct ordinal index with specified configuration */
@@ -130,6 +115,36 @@ OrdIndex::~OrdIndex() = default;
 std::vector<OrdDBPtr> TxOutToPrune;
 
 /**
+ * Check if a transaction contains ordinal inscription data.
+ *
+ * @param[in] tx The transaction to examine
+ * @param[in] output_index The specific output index (currently unused - inscriptions are per-transaction)
+ * @return true if inscription patterns are detected, false otherwise
+ */
+static bool OutputContainsInscription(const CTransactionRef& tx, size_t output_index)
+{
+    if (tx->vin.empty() || tx->vin[0].scriptWitness.stack.empty()) {
+        return false;
+    }
+    for(const auto& witness_item : tx->vin[0].scriptWitness.stack){
+        if (witness_item.size() < 6) {
+            continue;
+        }
+        if (witness_item[0] == OP_FALSE && witness_item[1] == OP_IF) {
+            uint8_t data_length = witness_item[2];
+            if (data_length >= 3 && witness_item.size() >= 3 + data_length) {
+                std::string third_element(witness_item.begin() + 3, 
+                                         witness_item.begin() + 3 + data_length);
+                if (third_element.size() >= 3 && third_element.compare(0, 3, "ord") == 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/**
  * Allocate satoshi ranges from a pool following FIFO (first-in-first-out) order.
  * 
  * This implements the core ordinal theory algorithm where satoshis are assigned to outputs
@@ -142,28 +157,21 @@ std::vector<OrdDBPtr> TxOutToPrune;
  */
 static std::pair<std::vector<SatoshiRange>, std::vector<SatoshiRange>> SkimRanges(std::vector<SatoshiRange>& pool, uint64_t amount) {
     std::vector<SatoshiRange> result;
-    size_t i = 0; // Index to track consumed ranges
-
+    size_t i = 0;
     while (amount > 0 && i < pool.size()) {
         SatoshiRange& r = pool[i];
         uint64_t available = r.Size();
-
         if (amount >= available) {
-            // Consume the entire range
             result.push_back(r);
             amount -= available;
-            ++i; // Move to the next range
+            ++i;
         } else {
-            // Consume only part of the range from the beginning
             result.push_back({r.start, r.start + amount});
-            r.start += amount; // Shrink the range from the front
+            r.start += amount;
             amount = 0;
         }
     }
-
-    // Remove fully consumed ranges from the pool
     pool.erase(pool.begin(), pool.begin() + i);
-
     return {result, pool};
 }
 
@@ -188,6 +196,7 @@ static std::pair<std::vector<SatoshiRange>, std::vector<SatoshiRange>> SkimRange
  */
 bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
 {
+    
     // Phase 1: Prune old spent outputs if pruning is enabled
     // This reduces database size by removing ordinal data for old spent outputs
     if(g_ordindex_prune) 
@@ -257,8 +266,10 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
                     m_db->WriteOrdinalRanges(txin.prevout.hash, txin.prevout.n, entry);
                 }
             } else {
-                LogError("Failed to read ordinal ranges for input %s:%d in tx %s\n",
+
+                LogPrintf("Failed to read ordinal ranges for input %s:%d in tx %s\n",
                          txin.prevout.hash.ToString(), txin.prevout.n, tx->GetHash().ToString());
+                std::abort();
             }
         }
 
@@ -281,7 +292,10 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
             TxOutputSatoshiEntry entry{assigned.first, static_cast<int>(block.height)};
             entry.spent = false;
             entry.inscription = output_has_inscription;
-            m_db->WriteOrdinalRanges(tx->GetHash(), vout_index, entry);
+            if(!m_db->WriteOrdinalRanges(tx->GetHash(), vout_index, entry)) {
+                LogPrintf("Failed to write ordinal ranges for %s:%d\n", tx->GetHash().ToString(), vout_index);
+                std::abort();
+            }
         }
 
         // Step 3c: Collect transaction fees
@@ -363,19 +377,7 @@ BaseIndex::DB& OrdIndex::GetDB() const { return *m_db; }
  */
 bool OrdIndex::FindOrdRangesByTxOutput(const uint256& tx_hash, uint32_t& vout, TxOutputSatoshiEntry& entry) const
 {
-    bool found = m_db->ReadOrdinalRanges(tx_hash, vout, entry);
-    if (!found) {
-        LogPrintf("No database entry found for %s:%d\n", tx_hash.ToString(), vout);
-        return false;
-    }
-    
-    if (entry.ranges.empty()) {
-        LogPrintf("Empty ranges found for %s:%d\n", tx_hash.ToString(), vout);
-        return false; // No ordinal ranges found for this output
-    }
-    
-    LogPrintf("Found %d ranges for %s:%d\n", entry.ranges.size(), tx_hash.ToString(), vout);
-    return true;
+    return m_db->ReadOrdinalRanges(tx_hash, vout, entry);
 }
 
 /**
