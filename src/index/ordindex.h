@@ -182,4 +182,12 @@ extern std::unique_ptr<OrdIndex> g_ordindex;
 /** Global configuration flags for ordinal index behavior */
 extern std::unique_ptr<bool> g_ordindex_prune;
 extern std::unique_ptr<bool> g_ordindex_rewrite_spent;
+
+// Forward declarations for helper functions defined in ordindex.cpp
+#include <primitives/transaction.h>
+#include <vector>
+
+bool OutputContainsInscription(const CTransactionRef& tx, size_t output_index);
+std::pair<std::vector<SatoshiRange>, std::vector<SatoshiRange>> SkimRanges(std::vector<SatoshiRange>& pool, uint64_t amount);
+
 #endif // BITCOIN_INDEX_ORDINDEX_H

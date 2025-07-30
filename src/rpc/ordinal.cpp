@@ -117,15 +117,32 @@ static RPCHelpMan getordinalrangesbytxoutput()
         throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Ordinal index is not available.");
     }
 
+    // Manual validation of txid BEFORE ParseHashV
+    std::string txid_str = request.params[0].get_str();
+
+    // Check txid length (should be 64 hex chars)
+    if (txid_str.size() != 64) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "txid must be of length 64");
+    }
+    // Check txid is hex
+    if (!IsHex(txid_str)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "txid must be hexadecimal string");
+    }
+
     uint256 txid = ParseHashV(request.params[0], "txid");
     uint32_t vout = Uint32FromUniValue(request.params[1]);
+
+    // Check vout is in valid range (non-negative)
+    if (request.params[1].getInt<int>() < 0) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter");
+    }
 
     TxOutputSatoshiEntry entry;
     g_ordindex->FindOrdRangesByTxOutput(txid, vout, entry);
 
     std::vector<SatoshiRange> ranges = entry.ranges;
 
-    UniValue result(UniValue::VOBJ);
+    UniValue result(UniValue::VOBJ);   
     
     UniValue height_val;
     height_val.setInt((uint64_t)entry.block_height);

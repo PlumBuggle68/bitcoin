@@ -96,10 +96,9 @@ bool OrdIndex::DB::WriteOrdinalRanges(const uint256& txid, uint32_t vout, const 
  */
 bool OrdIndex::DB::EraseOrdinalRanges(const uint256& txid, uint32_t vout)
 {
-    /*CDBBatch batch(*this);
+    CDBBatch batch(*this);
     batch.Erase(std::make_pair(DB_ORDINDEX, std::make_pair(txid, vout)));
-    return WriteBatch(batch);*/
-    return true;
+    return WriteBatch(batch);
 }
 
 /** Construct ordinal index with specified configuration */
@@ -109,40 +108,11 @@ OrdIndex::OrdIndex(std::unique_ptr<interfaces::Chain> chain, size_t n_cache_size
 {}
 
 /** Default destructor (required due to unique_ptr with forward declaration) */
-OrdIndex::~OrdIndex() = default;
+OrdIndex::~OrdIndex() = default; 
 
 /** Vector to track transaction outputs that need to be pruned after specified block delay */
 std::vector<OrdDBPtr> TxOutToPrune;
 
-/**
- * Check if a transaction contains ordinal inscription data.
- *
- * @param[in] tx The transaction to examine
- * @param[in] output_index The specific output index (currently unused - inscriptions are per-transaction)
- * @return true if inscription patterns are detected, false otherwise
- */
-static bool OutputContainsInscription(const CTransactionRef& tx, size_t output_index)
-{
-    if (tx->vin.empty() || tx->vin[0].scriptWitness.stack.empty()) {
-        return false;
-    }
-    for(const auto& witness_item : tx->vin[0].scriptWitness.stack){
-        if (witness_item.size() < 6) {
-            continue;
-        }
-        if (witness_item[0] == OP_FALSE && witness_item[1] == OP_IF) {
-            uint8_t data_length = witness_item[2];
-            if (data_length >= 3 && witness_item.size() >= 3 + data_length) {
-                std::string third_element(witness_item.begin() + 3, 
-                                         witness_item.begin() + 3 + data_length);
-                if (third_element.size() >= 3 && third_element.compare(0, 3, "ord") == 0) {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
-}
 
 /**
  * Allocate satoshi ranges from a pool following FIFO (first-in-first-out) order.
@@ -155,7 +125,7 @@ static bool OutputContainsInscription(const CTransactionRef& tx, size_t output_i
  * @param[in] amount Number of satoshis to allocate from the pool
  * @return Pair containing (allocated_ranges, remaining_pool)
  */
-static std::pair<std::vector<SatoshiRange>, std::vector<SatoshiRange>> SkimRanges(std::vector<SatoshiRange>& pool, uint64_t amount) {
+std::pair<std::vector<SatoshiRange>, std::vector<SatoshiRange>> SkimRanges(std::vector<SatoshiRange>& pool, uint64_t amount) {
     std::vector<SatoshiRange> result;
     size_t i = 0;
     while (amount > 0 && i < pool.size()) {
@@ -262,14 +232,12 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
                     // If spent tracking is enabled, mark the output as spent
                     TxOutputSatoshiEntry entry{prev_entry.ranges, prev_entry.block_height};
                     entry.spent = true;
-                    entry.inscription = prev_entry.inscription; // Preserve inscription status
                     m_db->WriteOrdinalRanges(txin.prevout.hash, txin.prevout.n, entry);
                 }
             } else {
 
                 LogPrintf("Failed to read ordinal ranges for input %s:%d in tx %s\n",
                          txin.prevout.hash.ToString(), txin.prevout.n, tx->GetHash().ToString());
-                std::abort();
             }
         }
 
@@ -281,20 +249,12 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
             // Allocate the required satoshis from the pool
             std::pair<std::vector<SatoshiRange>, std::vector<SatoshiRange>> assigned = SkimRanges(pool, sats);
             pool = assigned.second; // Update pool with remaining ranges
-            
-            // Check if this output contains inscription data
-            bool output_has_inscription = OutputContainsInscription(tx, vout_index);
-            if (output_has_inscription) {
-                LogInfo("Found ordinal inscription in tx: %s output: %d\n", tx->GetHash().ToString(), vout_index);
-            }
-            
+
             // Create and store the ordinal entry for this output
             TxOutputSatoshiEntry entry{assigned.first, static_cast<int>(block.height)};
             entry.spent = false;
-            entry.inscription = output_has_inscription;
             if(!m_db->WriteOrdinalRanges(tx->GetHash(), vout_index, entry)) {
                 LogPrintf("Failed to write ordinal ranges for %s:%d\n", tx->GetHash().ToString(), vout_index);
-                std::abort();
             }
         }
 
@@ -340,24 +300,16 @@ bool OrdIndex::CustomAppend(const interfaces::BlockInfo& block)
         // Allocate ordinals from the coinbase pool
         std::pair<std::vector<SatoshiRange>, std::vector<SatoshiRange>> assigned = SkimRanges(coinbase_output_ranges, sats);
         coinbase_output_ranges = assigned.second;
-        // Check if this coinbase output contains inscription data (rare but possible)
-        bool output_has_ordinals = OutputContainsInscription(coinbase_tx, vout_index);
-        if (output_has_ordinals) {
-            LogInfo("Found ordinal inscription in tx: %s output: %d\n", coinbase_tx->GetHash().ToString(), vout_index);
-        }
         
         // Create and store the ordinal entry for this coinbase output
         TxOutputSatoshiEntry entry{assigned.first, static_cast<int>(block.height)};
         entry.spent = false;
-        entry.inscription = output_has_ordinals;
         m_db->WriteOrdinalRanges(coinbase_tx->GetHash(), vout_index, entry);
     }
 
     // Phase 5: Update the global ordinal counter
     // This tracks the highest ordinal number assigned so far
     m_last_ordinal = mint_end;
-
-    LogInfo("Finished indexing block height: %d\n", block.height);
 
     // Persist the last ordinal counter to the database
     return m_db->Write(std::make_pair(DB_ORDINDEX, "lastordinal"), m_last_ordinal);
